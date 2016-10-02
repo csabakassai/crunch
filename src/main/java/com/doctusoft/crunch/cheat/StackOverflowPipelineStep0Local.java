@@ -8,6 +8,7 @@ import com.google.cloud.dataflow.sdk.transforms.DoFn;
 import com.google.cloud.dataflow.sdk.transforms.ParDo;
 import com.google.cloud.dataflow.sdk.values.PCollection;
 import lombok.extern.log4j.Log4j2;
+import sun.util.logging.resources.logging;
 
 import java.io.Serializable;
 
@@ -17,7 +18,7 @@ public class StackOverflowPipelineStep0Local implements Serializable {
     public static void main(String[] args) {
 
         Pipeline pipeline = Pipeline.create(PipelineOptionsFactory.create());
-        PCollection<String> lines = pipeline.apply(TextIO.Read.from("gs://ds-bq-demo-eu/stackoverflow/Posts-small-sample.xml"));
+        PCollection<String> lines = pipeline.apply(TextIO.Read.from(StackOverflowPipelineConstants.POSTS_SAMPLE_LOCATION));
         lines.apply(ParDo.of(new DoFn<String, StackOverflowPost>() {
             @Override
             public void processElement(ProcessContext c) throws Exception {
