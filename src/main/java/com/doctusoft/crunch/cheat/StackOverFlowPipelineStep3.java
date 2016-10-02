@@ -1,11 +1,11 @@
 package com.doctusoft.crunch.cheat;
 
-import com.doctusoft.crunch.jaxb.StackOverFlowXmlRow;
-import com.doctusoft.crunch.model.StackOverflowQuestion;
-import com.doctusoft.crunch.util.DomainClass;
-import com.google.api.services.bigquery.model.TableRow;
+import com.doctusoft.crunch.BQWritePTransform;
+import com.doctusoft.crunch.model.StackOverflowComment;
+import com.doctusoft.crunch.model.StackOverflowPost;
+import com.doctusoft.crunch.model.StackOverflowThread;
 import com.google.cloud.dataflow.sdk.Pipeline;
-import com.google.cloud.dataflow.sdk.io.BigQueryIO;
+import com.google.cloud.dataflow.sdk.coders.SerializableCoder;
 import com.google.cloud.dataflow.sdk.io.Read;
 import com.google.cloud.dataflow.sdk.io.XmlSource;
 import com.google.cloud.dataflow.sdk.options.DataflowPipelineOptions;
@@ -16,52 +16,61 @@ import com.google.cloud.dataflow.sdk.transforms.GroupByKey;
 import com.google.cloud.dataflow.sdk.transforms.ParDo;
 import com.google.cloud.dataflow.sdk.values.KV;
 import com.google.cloud.dataflow.sdk.values.PCollection;
-import com.google.common.base.Preconditions;
-import com.google.common.collect.Lists;
 import lombok.SneakyThrows;
 import lombok.extern.log4j.Log4j2;
 
 import java.io.Serializable;
 import java.util.Iterator;
-import java.util.List;
 
-/**
- * Created by cskassai on 28/09/16.
- */
 @Log4j2
-public class StackOverFlowPipelineStep3 implements Serializable {
+public class StackOverflowPipelineStep3 implements Serializable {
 
     @SneakyThrows
     public static void main(String[] args) {
 
+
         DataflowPipelineOptions dataflowPipelineOptions = PipelineOptionsFactory.create().as(DataflowPipelineOptions.class);
         dataflowPipelineOptions.setRunner(DataflowPipelineRunner.class);
-        dataflowPipelineOptions.setProject("ds-bq-demo");
-        dataflowPipelineOptions.setZone("europe-west1-b");
-        dataflowPipelineOptions.setWorkerMachineType("n1-highmem-8");
-        dataflowPipelineOptions.setNumWorkers(16);
-
-        dataflowPipelineOptions.setStagingLocation("gs://ds-bq-demo-eu/staging/");
-        dataflowPipelineOptions.setTempLocation("gs://ds-bq-demo-eu/temp/");
+        dataflowPipelineOptions.setProject(StackOverflowPipelineConstants.PROJECT_ID);
+        dataflowPipelineOptions.setZone(StackOverflowPipelineConstants.ZONE);
+        dataflowPipelineOptions.setStagingLocation(StackOverflowPipelineConstants.STAGING_LOCATION);
 
         Pipeline pipeline = Pipeline.create(dataflowPipelineOptions);
 
-        XmlSource<StackOverFlowXmlRow> xmlSource = XmlSource
-                .<StackOverFlowXmlRow>from("gs://ds-bq-demo-eu/stackoverflow/Posts-sample.xml")
+
+        XmlSource<StackOverflowPost> postXmlSource = XmlSource
+                .<StackOverflowPost>from(StackOverflowPipelineConstants.POSTS_SAMPLE_LOCATION)
                 .withRootElement("posts")
                 .withRecordElement("row")
-                .withRecordClass(StackOverFlowXmlRow.class);
+                .withRecordClass(StackOverflowPost.class);
 
-        PCollection<StackOverFlowXmlRow> rows = pipeline.apply(Read.from(xmlSource));
+        PCollection<StackOverflowPost> posts = pipeline
+                .apply("Reading posts", Read.from(postXmlSource))
+                .setCoder(SerializableCoder.of(StackOverflowPost.class));
+
+        posts.apply("Writing posts into BQ", new BQWritePTransform(StackOverflowPost.class, "post"));
 
 
+        XmlSource<StackOverflowComment> commentXmlSource = XmlSource
+                .<StackOverflowComment>from(StackOverflowPipelineConstants.COMMENTS_SAMPLE_LOCATION)
+                .withRootElement("comments")
+                .withRecordElement("row")
+                .withRecordClass(StackOverflowComment.class);
 
-        PCollection<KV<String, StackOverFlowXmlRow>> questionsAndAnswers = rows
-                .apply(ParDo.of(new DoFn<StackOverFlowXmlRow, KV<String, StackOverFlowXmlRow>>() {
+        PCollection<StackOverflowComment> comments = pipeline
+                .apply("Reading comments", Read.from(commentXmlSource))
+                .setCoder(SerializableCoder.of(StackOverflowComment.class));
+
+        comments.apply("Writing comments into BQ", new BQWritePTransform(StackOverflowComment.class, "comment"));
+
+
+        PCollection<KV<String, StackOverflowPost>> questionsAndAnswers = posts
+                .apply("Mapping by question id", ParDo.of(new DoFn<StackOverflowPost, KV<String, StackOverflowPost>>() {
                     @Override
                     public void processElement(ProcessContext processContext) throws Exception {
-                        StackOverFlowXmlRow element = processContext.element();
-                        switch (element.getPostTypeId()) {
+                        StackOverflowPost element = processContext.element();
+                        String postTypeId = element.getPostTypeId();
+                        switch (postTypeId) {
                             case "1":
                                 processContext.output(KV.of(element.getId(), element));
                                 break;
@@ -69,71 +78,52 @@ public class StackOverFlowPipelineStep3 implements Serializable {
                                 processContext.output(KV.of(element.getParentID(), element));
                                 break;
                             default:
-                                log.warn("Unsupported posTypeId: {}", element.getPostTypeId());
+                                log.warn("Unsupported posTypeId: {}", postTypeId);
                         }
                     }
                 }));
 
-        PCollection<KV<String, Iterable<StackOverFlowXmlRow>>> questionsWithItsAnswers = questionsAndAnswers.apply(GroupByKey.create());
+        PCollection<KV<String, Iterable<StackOverflowPost>>> questionsWithItsAnswers = questionsAndAnswers.apply(GroupByKey.create());
 
-        PCollection<StackOverflowQuestion> questions = questionsWithItsAnswers.apply(ParDo.of(new DoFn<KV<String, Iterable<StackOverFlowXmlRow>>, StackOverflowQuestion>() {
-            @Override
-            public void processElement(ProcessContext processContext) throws Exception {
-                KV<String, Iterable<StackOverFlowXmlRow>> element = processContext.element();
+        PCollection<StackOverflowThread> threads = questionsWithItsAnswers.apply("Joining answers to questions",
+                ParDo.of(new DoFn<KV<String, Iterable<StackOverflowPost>>, StackOverflowThread>() {
+                    @Override
+                    public void processElement(ProcessContext processContext) throws Exception {
 
-                Iterable<StackOverFlowXmlRow> value = element.getValue();
+                        KV<String, Iterable<StackOverflowPost>> element = processContext.element();
+                        Iterable<StackOverflowPost> postsByKey = element.getValue();
 
-                StackOverflowQuestion question = null;
-                List<StackOverFlowXmlRow> answers = Lists.newArrayList();
+                        StackOverflowThread thread = new StackOverflowThread();
 
-                Iterator<StackOverFlowXmlRow> iterator = value.iterator();
-                while (iterator.hasNext()) {
-                    StackOverFlowXmlRow row = iterator.next();
-                    switch (row.getPostTypeId()) {
-                        case "1":
-                            Preconditions.checkArgument(question == null);
-                            question = new StackOverflowQuestion();
-                            question.setQuestion(row);
-                            break;
-                        case "2":
-                            answers.add(row);
-                            break;
-                        default:
-                            log.warn("Unsupported posTypeId: {}", row.getPostTypeId());
+                        Iterator<StackOverflowPost> iterator = postsByKey.iterator();
+                        while (iterator.hasNext()) {
+                            StackOverflowPost post = iterator.next();
+                            String postTypeId = post.getPostTypeId();
+                            switch (postTypeId) {
+                                case "1":
+                                    if(thread.getQuestion() != null) {
+                                        log.error("More question with id: {}", post.getId());
+                                    }
+                                    thread.setQuestion(post);
+                                    break;
+                                case "2":
+                                    thread.getAnswers().add(post);
+                                    break;
+                                default:
+                                    log.warn("Unsupported posTypeId: {}", postTypeId);
+                            }
+                        }
+
+                        if (thread.getQuestion() == null) {
+                            log.error("No question for id: {}", element.getKey());
+                        } else {
+                            processContext.output(thread);
+                        }
                     }
-                }
-
-                if (question == null) {
-                    log.error("No question for id: {}", element.getKey());
-                } else {
-                    question.setAnswers(answers);
-                    processContext.output(question);
-                }
-
-            }
-        }));
+                }));
 
 
-        final DomainClass<StackOverflowQuestion> dom = DomainClass.of(StackOverflowQuestion.class);
-
-
-
-        PCollection<TableRow> bqRows = questions.apply(ParDo.of(new DoFn<StackOverflowQuestion, TableRow>() {
-            @Override
-            public void processElement(ProcessContext processContext) throws Exception {
-                StackOverflowQuestion s = processContext.element();
-
-                TableRow tableRow = dom.writeBq(s);
-
-                processContext.output(tableRow);
-            }
-        }));
-
-        bqRows.apply(BigQueryIO.Write
-                .withSchema(dom.getBqSchema())
-                .to(dom.createTable(pipeline.getOptions().as(DataflowPipelineOptions.class).getProject(), "stackoverflow").getTableReference())
-                .withWriteDisposition(BigQueryIO.Write.WriteDisposition.WRITE_TRUNCATE));
-
+        threads.apply("Writing threads into BQ", new BQWritePTransform(StackOverflowThread.class, "thread"));
 
 
         pipeline.run();

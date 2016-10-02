@@ -1,5 +1,6 @@
 package com.doctusoft.crunch.jaxb;
 
+import com.doctusoft.crunch.model.StackOverflowPost;
 import com.google.common.base.Charsets;
 import com.google.common.io.Resources;
 import org.junit.Assert;
@@ -22,18 +23,18 @@ public class TestXmlParsing {
     public void testRowParsing() throws Exception {
         List<String> lines = Resources.readLines(getClass().getResource("/testRows.xml"), Charsets.UTF_8);
 
-        JAXBContext jaxbContext = JAXBContext.newInstance(StackOverFlowXmlRow.class);
+        JAXBContext jaxbContext = JAXBContext.newInstance(StackOverflowPost.class);
         Unmarshaller unmarshaller = jaxbContext.createUnmarshaller();
-        Stream<StackOverFlowXmlRow> rows = lines.stream().map((String line) -> {
+        Stream<StackOverflowPost> rows = lines.stream().map((String line) -> {
             try {
-                return (StackOverFlowXmlRow) unmarshaller.unmarshal(new StringReader(line));
+                return (StackOverflowPost) unmarshaller.unmarshal(new StringReader(line));
             } catch (JAXBException e) {
                 throw new RuntimeException(e);
             }
         });
 
 
-        List<StackOverFlowXmlRow> rowList = rows.collect(Collectors.toList());
+        List<StackOverflowPost> rowList = rows.collect(Collectors.toList());
         Assert.assertTrue(!rowList.isEmpty());
     }
 }

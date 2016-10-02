@@ -1,8 +1,8 @@
 package com.doctusoft.crunch.cheat;
 
-import com.doctusoft.crunch.jaxb.StackOverFlowXmlRow;
-import com.doctusoft.crunch.jaxb.StackoverflowComment;
-import com.doctusoft.crunch.util.DomainClass;
+import com.doctusoft.crunch.model.StackOverflowComment;
+import com.doctusoft.crunch.model.StackOverflowPost;
+import com.google.api.services.bigquery.model.TableReference;
 import com.google.api.services.bigquery.model.TableRow;
 import com.google.cloud.dataflow.sdk.Pipeline;
 import com.google.cloud.dataflow.sdk.coders.SerializableCoder;
@@ -20,77 +20,75 @@ import lombok.extern.log4j.Log4j2;
 
 import java.io.Serializable;
 
-/**
- * Created by cskassai on 28/09/16.
- */
 @Log4j2
-public class StackOverFlowPipelineStep2 implements Serializable {
+public class StackOverflowPipelineStep2 implements Serializable {
 
     @SneakyThrows
     public static void main(String[] args) {
 
         DataflowPipelineOptions dataflowPipelineOptions = PipelineOptionsFactory.create().as(DataflowPipelineOptions.class);
         dataflowPipelineOptions.setRunner(DataflowPipelineRunner.class);
-        dataflowPipelineOptions.setProject("ds-bq-demo");
-        dataflowPipelineOptions.setZone("europe-west1-b");
-
-        dataflowPipelineOptions.setStagingLocation("gs://ds-bq-demo-eu/staging/");
-        dataflowPipelineOptions.setTempLocation("gs://ds-bq-demo-eu/temp/");
+        dataflowPipelineOptions.setProject(StackOverflowPipelineConstants.PROJECT_ID);
+        dataflowPipelineOptions.setZone(StackOverflowPipelineConstants.ZONE);
+        dataflowPipelineOptions.setStagingLocation(StackOverflowPipelineConstants.STAGING_LOCATION);
 
         Pipeline pipeline = Pipeline.create(dataflowPipelineOptions);
 
 
-        XmlSource<StackOverFlowXmlRow> postXmlSource = XmlSource
-                .<StackOverFlowXmlRow>from("gs://ds-bq-demo-eu/stackoverflow/Posts-samples.xml")
+        XmlSource<StackOverflowPost> postXmlSource = XmlSource
+                .<StackOverflowPost>from(StackOverflowPipelineConstants.POSTS_SAMPLE_LOCATION)
                 .withRootElement("posts")
                 .withRecordElement("row")
-                .withRecordClass(StackOverFlowXmlRow.class);
+                .withRecordClass(StackOverflowPost.class);
 
-        PCollection<StackOverFlowXmlRow> posts = pipeline.apply(Read.from(postXmlSource)).setCoder(SerializableCoder.of(StackOverFlowXmlRow.class));
+        PCollection<StackOverflowPost> posts = pipeline
+                .apply("Reading posts", Read.from(postXmlSource))
+                .setCoder(SerializableCoder.of(StackOverflowPost.class));
 
-        final DomainClass<StackOverFlowXmlRow> postDomainClass = DomainClass.of(StackOverFlowXmlRow.class);
-
-        PCollection<TableRow> bqRows = posts.apply(ParDo.of(new DoFn<StackOverFlowXmlRow, TableRow>() {
+        PCollection<TableRow> bqRows = posts.apply("Converting posts to BQ rows", ParDo.of(new DoFn<StackOverflowPost, TableRow>() {
             @Override
             public void processElement(ProcessContext processContext) throws Exception {
-                StackOverFlowXmlRow s = processContext.element();
-
-                TableRow tableRow = postDomainClass.writeBq(s);
-
+                StackOverflowPost s = processContext.element();
+                TableRow tableRow = s.toBQTableRow();
                 processContext.output(tableRow);
             }
         }));
 
-        bqRows.apply(BigQueryIO.Write
-                .withSchema(postDomainClass.getBqSchema())
-                .to(postDomainClass.createTable(pipeline.getOptions().as(DataflowPipelineOptions.class).getProject(), "stackoverflow").getTableReference())
+        bqRows.apply("Writing posts to BQ", BigQueryIO.Write
+                .withSchema(StackOverflowPost.BQ_TABLE_SCHEMA)
+                .to(new TableReference()
+                        .setProjectId(dataflowPipelineOptions.getProject())
+                        .setDatasetId("stackoverflow")
+                        .setTableId("post"))
                 .withWriteDisposition(BigQueryIO.Write.WriteDisposition.WRITE_TRUNCATE));
 
-        XmlSource<StackoverflowComment> commentXmlSource = XmlSource
-                .<StackoverflowComment>from("gs://ds-bq-demo-eu/stackoverflow/Comments.xml")
+        XmlSource<StackOverflowComment> commentXmlSource = XmlSource
+                .<StackOverflowComment>from(StackOverflowPipelineConstants.COMMENTS_SAMPLE_LOCATION)
                 .withRootElement("comments")
                 .withRecordElement("row")
-                .withRecordClass(StackoverflowComment.class);
+                .withRecordClass(StackOverflowComment.class);
 
-        PCollection<StackoverflowComment> comments = pipeline.apply(Read.from(commentXmlSource)).setCoder(SerializableCoder.of(StackoverflowComment.class));
+        PCollection<StackOverflowComment> comments = pipeline
+                .apply("Reading comments", Read.from(commentXmlSource))
+                .setCoder(SerializableCoder.of(StackOverflowComment.class));
 
-        final DomainClass<StackoverflowComment> commentDomainClass = DomainClass.of(StackoverflowComment.class);
+        PCollection<TableRow> commentBQRows = comments.apply("Converting comments to BQ rows", ParDo.of(new DoFn<StackOverflowComment, TableRow>() {
 
-        PCollection<TableRow> commentRows = comments.apply(ParDo.of(new DoFn<StackoverflowComment, TableRow>() {
             @Override
             public void processElement(ProcessContext processContext) throws Exception {
-                StackoverflowComment s = processContext.element();
-                TableRow tableRow = commentDomainClass.writeBq(s);
+                StackOverflowComment s = processContext.element();
+                TableRow tableRow = s.toBQTableRow();
                 processContext.output(tableRow);
             }
         }));
 
-        bqRows.apply(BigQueryIO.Write
-                .withSchema(commentDomainClass.getBqSchema())
-                .to(commentDomainClass.createTable(pipeline.getOptions().as(DataflowPipelineOptions.class).getProject(), "stackoverflow").getTableReference())
+        commentBQRows.apply("Writing comments to BQ", BigQueryIO.Write
+                .withSchema(StackOverflowComment.BQ_TABLE_SCHEMA)
+                .to(new TableReference()
+                        .setProjectId(dataflowPipelineOptions.getProject())
+                        .setDatasetId("stackoverflow")
+                        .setTableId("comment"))
                 .withWriteDisposition(BigQueryIO.Write.WriteDisposition.WRITE_TRUNCATE));
-
-
 
 
 
